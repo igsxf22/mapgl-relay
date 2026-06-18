@@ -207,6 +207,28 @@ def get_vehicle_state(vehicle) -> VehicleState:
     )
 
 
+# Define callback for `vehicle.location.global_relative_frame` observer
+def altitude_callback(self, attr_name, value):
+    """
+    Create a callback for altitude.
+    Triggered when `vehicle.location.global_relative_frame` updates. 
+    Checks if altitude exceeds target and prints a message if so.
+    Args:
+        'self' - the associated vehicle object
+        'attr_name' - the observed attribute (`location` for this callback)
+        'value' - the updated attribute value.
+    """
+    global altitude_target
+    alt = value.global_relative_frame.alt
+    if altitude_target['target'] < alt and altitude_target['state'] == 'pending':
+        print(f" CALLBACK: Alt exceeded. Set: {altitude_target}", alt)
+        altitude_target={
+            'target': altitude_target['target'],
+            'state': 'triggered',
+            'time_set': altitude_target['time_set'],
+            'time_triggered': time.time()
+        }
+
 
 
 # Tests
@@ -251,56 +273,66 @@ if __name__ == "__main__":
     upload_mission(vehicle, mission, end_in_loiter=True)
     time.sleep(1)
 
-    # Set mode to AUTO to start the mission
-    print("Starting mission by setting mode to AUTO")
-    vehicle.mode = VehicleMode("AUTO")
-    time.sleep(1)
 
-
-    #Define callback for `vehicle.attitude` observer
+    # Use with altitude target to monitor vehicle altitude and trigger 
+    # actions when the target altitude is reached
     altitude_target = {
-        'target': 25,  # Target altitude in meters
+        'target': 55,  # Target altitude in meters
         'state': 'pending',  # 'pending', 'triggered'
         'time_set': time.time(),
         'time_triggered': None
     }
-    def altitude_callback(self, attr_name, value):
-        """
-        Create a callback for altitude.
-        Triggered when `vehicle.location.global_relative_frame` updates. 
-        Checks if altitude exceeds target and prints a message if so.
-        Args:
-            'self' - the associated vehicle object
-            'attr_name' - the observed attribute (`location` for this callback)
-            'value' - the updated attribute value.
-        """
-        global altitude_target
-        alt = value.global_relative_frame.alt
-        if compare(alt, altitude_target['target'], altitude_target['state']):
-            print(f" CALLBACK: Alt exceeded. Set: {altitude_target}", alt)
-            altitude_target={
-                'target': altitude_target['target'],
-                'state': 'triggered',
-                'time_set': altitude_target['time_set'],
-                'time_triggered': time.time()
-            }
-
     print("\nAdd `attitude` attribute callback/observer on `vehicle`")
     vehicle.add_attribute_listener('location', altitude_callback)
 
+    # If on ground, arm and takeoff
+    if vehicle.location.global_relative_frame.alt < 1.0:
+        while not vehicle.armed:
+            print("Arming vehicle...")
+            vehicle.armed = True
+            time.sleep(1)
+        print("Vehicle armed. Taking off...")
+        vehicle.mode = VehicleMode("TAKEOFF")
+        
 
     while True:
 
         vehicle_state = get_vehicle_state(vehicle)
         print(json.dumps(vehicle_state.__dict__, indent=2))
 
+
+        if vehicle.mode.name == "TAKEOFF":
+            print("Vehicle is taking off. Waiting to reach target altitude...")
+            time.sleep(3)
+            if vehicle.location.global_relative_frame.alt >= altitude_target['target']:
+                print("Target altitude reached.")
+                altitude_target['state'] = 'triggered'
+            continue
+
+        # Example of switching out of TAKEOFF mode
+        if (
+            vehicle.location.global_relative_frame.alt > altitude_target['target'] and
+            vehicle.mode.name == "TAKEOFF"
+        ):
+            print("Takeoff complete. Switching to AUTO")
+            vehicle.mode = VehicleMode("AUTO")
+            
+        # If restarting script and vehicle is in LOITER mode after takeoff, check if commands exist
+        # Switch to AUTO if commands exist, otherwise stay in LOITER
         if vehicle.mode.name == "LOITER":
             try:
-                print("Vehicle is in LOITER mode. Waiting for mode change to AUTO...")
-                time.sleep(3)
+                mission_commands = get_commands(vehicle, to_json=False)
+                if mission_commands:
+                    print("Mission commands exist. Switching to AUTO.")
+                    vehicle.mode = VehicleMode("AUTO")
+                else:
+                    print("No mission commands. Staying in LOITER.")
+            
+            # Exit on keyboard interrupt
             except KeyboardInterrupt:
                 print("Keyboard interrupt received. Exiting...")
                 break
+
 
         if vehicle.mode.name == "AUTO":
             try:
@@ -336,6 +368,9 @@ if __name__ == "__main__":
             except KeyboardInterrupt:
                 print("Keyboard interrupt received. Exiting...")
                 vehicle.mode = VehicleMode("LOITER")
+
+        elif vehicle.mode.name == "RTL":
+            print("Vehicle is returning to launch. Waiting for LAND command...")
 
         else:
             time.sleep(2)
