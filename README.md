@@ -44,9 +44,9 @@ See [RELAY_README.md](RELAY_README.md) for the full telemetry schema, signaling 
 
 ## Requirements
 
+This project uses [uv](https://docs.astral.sh/uv/):
+
 ```bash
-pip install -r requirements.txt
-# or with uv
 uv sync
 ```
 
